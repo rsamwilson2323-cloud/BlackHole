@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Black Hole</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; background: #000; overflow: hidden; cursor: none; font-family: Arial, sans-serif; }
+canvas { display: block; }
+#ui {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 99px;
+  padding: 8px 20px;
+  z-index: 10;
+  white-space: nowrap;
+  backdrop-filter: blur(8px);
+}
+#ui label { color: rgba(255,255,255,0.55); font-size: 12px; }
+#ui input[type=range] { width: 80px; accent-color: #a78bfa; }
+#ui span { color: #e9d5ff; font-size: 12px; font-weight: bold; min-width: 28px; }
+#esc-hint {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: rgba(255,255,255,0.3);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  pointer-events: none;
+}
+#stopped-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.85);
+  color: white;
+  font-size: 22px;
+  font-weight: bold;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 16px;
+  z-index: 20;
+}
+#stopped-overlay button {
+  font-size: 14px;
+  padding: 10px 28px;
+  border-radius: 99px;
+  border: 1px solid rgba(255,255,255,0.3);
+  background: rgba(167,139,250,0.2);
+  color: #e9d5ff;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+#stopped-overlay button:hover { background: rgba(167,139,250,0.4); }
+</style>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+
+<div id="ui">
+  <label>Size</label>
+  <input type="range" id="sizeSlider" min="30" max="200" value="80" step="1">
+  <span id="sizeVal">80</span>
+  <label style="margin-left:8px">Pull</label>
+  <input type="range" id="pullSlider" min="1" max="10" value="5" step="1">
+  <span id="pullVal">5</span>
+</div>
+
+<div id="esc-hint">Press <strong style="color:rgba(255,255,255,0.5)">ESC</strong> to stop &nbsp;|&nbsp; Move mouse to control the black hole</div>
+
+<div id="stopped-overlay">
+  <div>&#11035; Black hole stopped</div>
+  <button onclick="resume()">Resume</button>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const overlay = document.getElementById('stopped-overlay');
+const sizeSlider = document.getElementById('sizeSlider');
+const pullSlider = document.getElementById('pullSlider');
+const sizeVal = document.getElementById('sizeVal');
+const pullVal = document.getElementById('pullVal');
+
+let W, H;
+let mouse = { x: -999, y: -999 };
+let stopped = false;
+let animId;
+let holeRadius = 80;
+let pullStrength = 5;
+
+sizeSlider.oninput = () => { holeRadius = +sizeSlider.value; sizeVal.textContent = holeRadius; };
+pullSlider.oninput = () => { pullStrength = +pullSlider.value; pullVal.textContent = pullStrength; };
+
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+const NUM_PARTICLES = 700;
+const particles = [];
+
+function randRange(a, b) { return a + Math.random() * (b - a); }
+
+class Particle {
+  reset(randomPos) {
+    if (randomPos) {
+      this.x = Math.random() * W;
+      this.y = Math.random() * H;
+    } else {
+      const edge = Math.floor(Math.random() * 4);
+      if (edge === 0) { this.x = Math.random() * W; this.y = 0; }
+      else if (edge === 1) { this.x = W; this.y = Math.random() * H; }
+      else if (edge === 2) { this.x = Math.random() * W; this.y = H; }
+      else { this.x = 0; this.y = Math.random() * H; }
+    }
+    this.vx = randRange(-0.5, 0.5);
+    this.vy = randRange(-0.5, 0.5);
+    this.size = randRange(0.8, 2.5);
+    this.hue = Math.random() < 0.6 ? randRange(260, 290) : randRange(180, 220);
+    this.brightness = randRange(60, 100);
+    this.alpha = randRange(0.4, 1.0);
+    this.trail = [];
+    this.orbitAngle = Math.random() * Math.PI * 2;
+    this.orbitSpeed = randRange(0.02, 0.07) * (Math.random() < 0.5 ? 1 : -1);
+    this.captured = false;
+  }
+  constructor(randomPos) { this.reset(randomPos); }
+  update() {
+    const dx = mouse.x - this.x;
+    const dy = mouse.y - this.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const influence = holeRadius * 5;
+    const eventHorizon = holeRadius * 0.6;
+
+    if (dist < influence && dist > 0.1) {
+      const force = Math.pow((influence - dist) / influence, 2) * pullStrength * 0.15;
+      const nx = dx / dist;
+      const ny = dy / dist;
+      if (dist < holeRadius * 1.8 && !this.captured) this.captured = true;
+      if (this.captured) {
+        this.orbitAngle += this.orbitSpeed * (1 + (holeRadius / Math.max(dist, 1)) * 0.3);
+        const targetR = Math.max(eventHorizon * 0.5, dist - force * 12);
+        const ox = mouse.x + Math.cos(this.orbitAngle) * targetR;
+        const oy = mouse.y + Math.sin(this.orbitAngle) * targetR * 0.55;
+        this.x += (ox - this.x) * 0.15;
+        this.y += (oy - this.y) * 0.15;
+      } else {
+        this.vx += nx * force;
+        this.vy += ny * force;
+      }
+    } else {
+      if (this.captured) this.captured = false;
+    }
+
+    if (!this.captured) {
+      this.x += this.vx;
+      this.y += this.vy;
+      this.vx *= 0.99;
+      this.vy *= 0.99;
+    }
+
+    const dx2 = mouse.x - this.x;
+    const dy2 = mouse.y - this.y;
+    const d2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+
+    this.trail.push({ x: this.x, y: this.y });
+    if (this.trail.length > 12) this.trail.shift();
+
+    if (d2 < eventHorizon * 0.3 || this.x < -20 || this.x > W + 20 || this.y < -20 || this.y > H + 20) {
+      this.reset(false);
+    }
+  }
+  draw() {
+    const dx = mouse.x - this.x;
+    const dy = mouse.y - this.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const influence = holeRadius * 5;
+    const proximity = Math.max(0, 1 - dist / influence);
+    const brightness = this.brightness + proximity * 30;
+
+    if (this.trail.length > 2) {
+      ctx.beginPath();
+      ctx.moveTo(this.trail[0].x, this.trail[0].y);
+      for (let i = 1; i < this.trail.length; i++) ctx.lineTo(this.trail[i].x, this.trail[i].y);
+      ctx.strokeStyle = `hsla(${this.hue},80%,${brightness}%,${this.alpha * 0.3 * proximity})`;
+      ctx.lineWidth = this.size * 0.5;
+      ctx.stroke();
+    }
+
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.size * (1 + proximity * 0.5), 0, Math.PI * 2);
+    ctx.fillStyle = `hsla(${this.hue},80%,${brightness}%,${this.alpha})`;
+    ctx.fill();
+  }
+}
+
+for (let i = 0; i < NUM_PARTICLES; i++) particles.push(new Particle(true));
+
+let lensRing = 0;
+let diskAngle = 0;
+
+function drawBlackHole() {
+  const x = mouse.x, y = mouse.y;
+  if (x < -100) return;
+  const r = holeRadius;
+
+  const outerGlow = ctx.createRadialGradient(x, y, r * 0.6, x, y, r * 4.5);
+  outerGlow.addColorStop(0, 'rgba(120,80,220,0.18)');
+  outerGlow.addColorStop(0.3, 'rgba(60,40,180,0.09)');
+  outerGlow.addColorStop(0.7, 'rgba(30,10,100,0.04)');
+  outerGlow.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.beginPath();
+  ctx.arc(x, y, r * 4.5, 0, Math.PI * 2);
+  ctx.fillStyle = outerGlow;
+  ctx.fill();
+
+  diskAngle += 0.018;
+  const diskW = r * 2.8;
+  const diskH = r * 0.55;
+
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(diskAngle);
+
+  const rings = [
+    ['rgba(255,180,80,0.22)', 'rgba(255,100,30,0.10)'],
+    ['rgba(200,140,255,0.18)', 'rgba(100,60,220,0.08)'],
+    ['rgba(80,180,255,0.14)', 'rgba(30,100,200,0.06)'],
+    ['rgba(255,255,200,0.10)', 'rgba(200,180,100,0.04)'],
+  ];
+  for (let ring = 3; ring >= 0; ring--) {
+    const rr = r * (0.65 + ring * 0.25);
+    const rh = diskH * (0.5 + ring * 0.18);
+    const [c1, c2] = rings[ring];
+    const g = ctx.createLinearGradient(-diskW, 0, diskW, 0);
+    g.addColorStop(0, 'rgba(0,0,0,0)');
+    g.addColorStop(0.25, c2);
+    g.addColorStop(0.5, c1);
+    g.addColorStop(0.75, c2);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.beginPath();
+    ctx.ellipse(0, 0, rr * 1.1, rh * (1.2 - ring * 0.1), 0, 0, Math.PI * 2);
+    ctx.fillStyle = g;
+    ctx.fill();
+  }
+  ctx.restore();
+
+  lensRing += 0.03;
+  for (let i = 0; i < 3; i++) {
+    const pr = r * (1.0 + i * 0.08) + Math.sin(lensRing + i * 2) * r * 0.04;
+    const lensGrad = ctx.createRadialGradient(x, y, pr * 0.85, x, y, pr * 1.05);
+    const alpha = 0.25 - i * 0.07;
+    lensGrad.addColorStop(0, 'rgba(200,160,255,0)');
+    lensGrad.addColorStop(0.5, `rgba(220,190,255,${alpha})`);
+    lensGrad.addColorStop(1, 'rgba(200,160,255,0)');
+    ctx.beginPath();
+    ctx.arc(x, y, pr, 0, Math.PI * 2);
+    ctx.strokeStyle = lensGrad;
+    ctx.lineWidth = r * 0.12;
+    ctx.stroke();
+  }
+
+  const sg = ctx.createRadialGradient(x, y, 0, x, y, r * 0.75);
+  sg.addColorStop(0, 'rgba(0,0,0,1)');
+  sg.addColorStop(0.7, 'rgba(5,2,15,1)');
+  sg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.beginPath();
+  ctx.arc(x, y, r * 0.75, 0, Math.PI * 2);
+  ctx.fillStyle = sg;
+  ctx.fill();
+}
+
+function loop() {
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.fillRect(0, 0, W, H);
+  for (const p of particles) { p.update(); p.draw(); }
+  drawBlackHole();
+  animId = requestAnimationFrame(loop);
+}
+
+window.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+window.addEventListener('touchmove', e => {
+  e.preventDefault();
+  mouse.x = e.touches[0].clientX;
+  mouse.y = e.touches[0].clientY;
+}, { passive: false });
+
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { stopped ? resume() : stop(); }
+});
+
+function stop() {
+  stopped = true;
+  cancelAnimationFrame(animId);
+  overlay.style.display = 'flex';
+}
+
+function resume() {
+  stopped = false;
+  overlay.style.display = 'none';
+  mouse = { x: W / 2, y: H / 2 };
+  loop();
+}
+
+loop();
+</script>
+</body>
+</html>
